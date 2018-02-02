@@ -24,7 +24,7 @@ import paramiko             # SSH
 # pylint: disable=C0301
 
 # Global variables
-crassh_version = "2.8"      # Version Control in a Variable
+crassh_version = "2.6"      # Version Control in a Variable
 remote_conn = ""            # Paramiko Remote Connection
 remote_conn_pre = ""        # Paramiko Remote Connection Settings (pre-connect)
 
@@ -39,7 +39,7 @@ except NameError:
     Functions
 """
 
-def send_command(command="show ver", hostname="Switch", bail_timeout=60):
+def send_command(command="show ver", hostname="Switch", bail_timeout=0):
     """Sending commands to a switch, router, device, whatever!
 
         Args:
@@ -62,7 +62,7 @@ def send_command(command="show ver", hostname="Switch", bail_timeout=60):
     keeplooping = True
 
     # Regex for either config or enable
-    regex = '^' + hostname[:20] + '(.*)(\ )?#'
+    regex = '^' + hostname + '(.*)(\ )?#'
     theprompt = re.compile(regex)
 
     # Time when the command started, prepare for timeout.
@@ -279,7 +279,7 @@ def readauthfile(filepath):
     if os.path.isfile(filepath) is False:
         print("Cannot find %s" % filepath)
         sys.exit()
-    # Open file
+    # Open file
     f = open(filepath, 'r')
     # Loop thru the array
     for fline in f:
@@ -296,7 +296,7 @@ def readauthfile(filepath):
                     password = thisline[1].strip()
                     return username, password
 
-def connect(device="127.0.0.1", username="cisco", password="cisco", enable=False, enable_password="cisco", sysexit=False, timeout=10):
+def connect(device="127.0.0.1", username="cisco", password="cisco", enable=False,enable_password="cisco", sysexit=False, timeout=10):
     """Connect and get Hostname of Cisco Device
 
     This function wraps up ``paramiko`` and returns the hostname of the **Cisco** device.
@@ -437,6 +437,37 @@ def disconnect():
 
     global remote_conn_pre
     remote_conn_pre.close()
+    
+def write_configs_device(INTERFACE, hostname, bail_timeout, conf, rp):
+	if rp:
+		if "NX-OS" is in INTERFACE:
+			send_command("ip pim rp-address...", hostname, bail_timeout)
+		elif "IOS" is in INTERFACE:
+			send_command("ip pim rp-address 172.20.161.30 group-list 239.192.0.0/16", hostname, bail_timeout)
+		else:
+			send_command("ip pim rp-address 172.20.161.30 group-list 239.192.0.0/16", hostname, bail_timeout)
+	elif conf:
+		send_command("conf t", hostname, bail_timeout)
+	else:
+		send_command(("Interface "+INTERFACE), hostname, bail_timeout)
+    	send_command("no ip pim dense-mode", hostname, bail_timeout)
+    	send_command("ip pim sparse-mode", hostname, bail_timeout)
+    	
+def write_configs_txt(INTERFACE, hostname, configs, conf, rp):
+	if rp:
+		if "NX-OS" is in INTERFACE:
+			configs.write("ip pim rp-address.../n")
+		elif "IOS" is in INTERFACE:
+			configs.write("ip pim rp-address 172.20.161.30 group-list 239.192.0.0/16/n")
+		else:
+			configs.write("ip pim rp-address 172.20.161.30 group-list 239.192.0.0/16/n")
+	elif conf:
+		configs.write("conf t\n")
+	else:
+		configs.write("Interface " + INTERFACE +"\n")
+        configs.write("no ip pim dense-mode\n")
+        configs.write("ip pim sparse-mode\n")
+        configs.write("\n")
 
 def main():
     """Main Code Block
@@ -453,7 +484,7 @@ def main():
     switches = [] # Switches, devices, routers, whatever!
     commands = []
     filenames = []
-    sfile = '' # Switch File
+    sfile = '' # Switch File
     cfile = '' # Command File
 
     # Default variables (values)
@@ -625,7 +656,7 @@ def main():
     for switch in switches:
 
         if backup_credz:
-            tmp_sysexit = sysexit # re-assign so, don't bail on authentication failure
+            tmp_sysexit = sysexit # re-assign so, don't bail on authentication failure
             sysexit = False
 
         if enable:
@@ -633,7 +664,7 @@ def main():
         else:
             hostname = connect(switch, username, password, False, "", sysexit, connect_timeout)
 
-        if isinstance(hostname, bool): # Connection failed, function returned False
+        if isinstance(hostname, bool): # Connection failed, function returned False
             if backup_credz:
                 sysexit = tmp_sysexit # put it back, so fail or not (-Q) works as expected on backup credz
                 print("Trying backup credentials")
@@ -642,7 +673,7 @@ def main():
                 else:
                     hostname = connect(switch, backup_username, backup_password, False, "", sysexit, connect_timeout)
 
-                if isinstance(hostname, bool): # Connection failed, function returned False
+                if isinstance(hostname, bool): # Connection failed, function returned False
                     continue
             else:
                 continue
@@ -694,6 +725,54 @@ def main():
             # Close the File
             f.close()
 
+        #Write configs
+        filename = hostname + "-" + filetime + ".txt"
+        f = open(filename, 'r')
+        
+        filetime = datetime.datetime.now().strftime("%y%m%d-%H%M%S")
+        config_filename = hostname + "-" + filetime + "-configs.txt"
+        configs = open(config_filename, 'a')
+
+        version = send_command("sh ver", hostname, bail_timeout)
+        
+        #write cmd conf t
+        #write_configs_device("",hostname,bail_timeout,true, false)#writes to device
+        write_configs_txt("",hostname,configs,true, false)#writes to txt
+        
+        #foreach interface, write configs
+        for int in f:
+            int_line = False
+
+            if "Vlan" is in int:
+                int_line = True
+            elif "Serial" is in int:
+                int_line = True
+            elif "Multilink" is in int:
+                int_line = True
+            elif "Gigabit" is in int:
+                int_line = True
+            elif "TenGig" is in int:
+                int_line = True
+            elif "ATM" is in int:
+                int_line = True
+            elif "Tunnel" is in int:
+                int_line = True
+            else:
+                continue
+
+            if int_line:
+                INTERFACE = int.split()[0]
+                
+                #write to device
+                #write_configs_device(INTERFACE, hostname, bail_timeout, false, false)#writes to device
+                write_configs_txt(INTERFACE, hostname, configs, false, false)
+
+        #write ip pim rp
+        #write_configs_device(version, hostname, bail_timeout, false, true)#writes to device
+        write_configs_txt(version, hostname, configs, false, true)
+
+        configs.close()
+        f.close()
 
         # Disconnect from SSH
         disconnect()
